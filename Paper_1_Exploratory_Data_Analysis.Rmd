@@ -1,0 +1,365 @@
+---
+title: 'Budapest Property Market: Tools for Exploratory Data Analysis'
+author: "Benoît Guillaud"
+date: "15 June 2017"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r set-options, echo=FALSE, cache=FALSE}
+# set up markdown / knitr environment
+options(width = 100)
+```
+# Abstract
+This is the first in a serie of three papers to illustrate the use of simple R tools for the analysis of a city's Real Property market. We focus here on data preparation, descriptive statistics, and understand the dataset ahead of applying Machine Learning tools. The following papers deal with predictive modelling and optimisation.  
+
+We will provide an overview of sales and rental market, and identify areas with the best investment potential. 
+
+Along the way, we will learn how to:
+
+* Compute statistics - Group, create new variables and summarize data with `dplyr::`
+* Visualize summary statistics - Box plots and violin plots with `ggplot2::` and `plotly::`
+* Test hypotheses - Scatter plots and testing with `stats::cor.test()`
+* Identify confounders - Plot correlograms with `corrgram::` and mosaics with `vcd::` for continusous and categorical variables, respectively.
+* Identify class imbalances - Density plots with `ggplot2::`
+* Identify missing values with `VIM::`
+* Identify "near-zero variance" variables with `caret::`
+
+```{r setup, echo=FALSE, include=FALSE}
+# knitr options
+knitr::opts_chunk$set(echo = TRUE)
+
+# start with a clean slate
+gc()            # Force R to release memory it is no longer using
+rm(list = ls()) # Delete all objects in the workspace 
+
+# load libraries
+source("./R/LoadLibraries.R")
+
+# load custom functions
+source("./R/EvaluateModel.R")
+source("./R/PrepareData.R")
+source("./R/PlotMissingPercentages.R")
+```
+
+# Present, Load and Prepare the dataset
+The goal of this section is to illustrate a simple, general and systematic process to start with a dataset.
+
+## Origin of the data
+The datasets analysed were scraped from www.ingatlan.com, a popular platform in Hungary for property listings, using a bespoke script that leverages the powerful Python library "BeautifulSoup".
+
+The following assumptions are made when carrying out the search:
+ - Limit the search to 3 inner-city districts (V. VI. and VII. kerület)
+ - Limit the search to brickwork building (the vast majority in these districts) 
+ - Set "tenancy for sale" = NO, as I don't understand it 
+
+The resulting search url are: 
+
+* Sales (elado): http://ingatlan.com/listar/elado+lakas+nem-berleti-jog+tegla-epitesu-lakas+budapest+v-vi-vii-ker 
+* Rentals (kiado): http://ingatlan.com/listar/kiado+lakas+nem-berleti-jog+tegla-epitesu-lakas+budapest+v-vi-vii-ker
+
+
+## Features
+The following features are extracted from the listings:
+
+| Feature   | Description                                 | Type    |
+|-----------|---------------------------------------------|---------|
+| listing   | Number of the listing                       | ID      |
+| price     | Asking price in million Forint (HUF)        | Float   |
+| area      | Flat floor area (mezzanine NOT included)    | Integer |
+| rooms     | Number of rooms                             | String  |
+| fullrooms | Number of full rooms                        | Integer |
+| halfrooms | Number of half rooms                        | Integer |
+| district  | District wehre the property is located      | String  |
+| varos     | Administrative division inside the district | String  |
+| condition | Condition of the property                   | String  |
+| floor     | Floor                                       | Integer |
+| storeys   | Number of storeys in the building           | Integer |
+| lift      | Presence of an elevator                     | Boolean |
+| heating   | Type of heating                             | String  |
+| view      | Opening to the street or internal yard etc. | String  |
+| lat       | Latitude of the property                    | Float   |
+| long      | Longitude of the property                   | Float   |
+| orient    | Orientation of the windows                  | String  |
+| parking   | Options for parking, if any                 | String  |
+| balcony   | Whether there is a balcony or not           | Boolean |
+| aircon    | Whether these is air conditioning           | Boolean |
+| ceiling   | Ceiling height                              | Boolean |
+| utility   | Utility level as classified by ingatlan.com | String  |
+| bathtoil  | Whether bathroom and toilets are together   | String  |
+| garcess   | Whether there is garden access              | Boolean |
+
+Features not collected include the street, as they usually span across long distances in Budapest.
+
+Later in the analysis, the selling and rental rental prices are expressed in mFt(/year), while the price-per-square-meter are expressed in kFt/m2(/year).
+
+
+## Load and clean the data
+This script loads the raw data as they were collected, then prepare them into 2 tidy datasets:
+
+* "elado" contains all sales data
+* "kiado" contains all rental data
+
+The processing typically involves cleaning, recoding, feature engineering and feature selection for further analysis.
+```{r}
+# Load the data
+elado <- read.csv("./data/extraction_elado_2017_03_16.txt", 
+                  fileEncoding="UTF-8-BOM", header=TRUE, sep=";")
+kiado <- read.csv("./data/extraction_kiado_2017_03_16.txt", 
+                  fileEncoding="UTF-8-BOM", header=TRUE, sep=";")
+
+# Clean and recode the variables
+elado <- PrepareData(elado)
+kiado <- PrepareData(kiado)
+
+# Create new variable ppsm and rpsm from "price"
+elado <- dplyr::mutate(elado, ppsm = price*1000/area)    # kFt/m2
+kiado <- dplyr::mutate(kiado, 
+                       rent = price*12/1000,             # mFt/year
+                       rpsm = price*12/area)             # kFt/m2/year
+
+
+# select the features of interest
+elado <- dplyr::select(elado, price, ppsm, area, halfrooms, fullrooms, varos, district, 
+                       lift, floor, balcony, view, condition, heating, aircon, orient)
+kiado <- dplyr::select(kiado, rent, rpsm, area, halfrooms, fullrooms, varos, district, 
+                       lift, floor, balcony, view, condition, heating, aircon, orient)
+```
+
+
+# Descriptive Analytics
+In this section, we focus on building simple statistics to answer questions about the property market, for instance variation of the price-per-square-meter (`ppsm` and `rpsm`) or the annual return on investment (`anr`) against other variables. 
+
+
+## Variations `district` to `district`
+The following tables report the median value and standard deviation of `ppsm` and `rpsm` in each district. The results are expressed in kFt/m2 (/year). 
+```{r}
+# calculate median and standard deviations
+districts.el <- dplyr::group_by(elado, district)
+districts.ki <- dplyr::group_by(kiado, district)
+
+dplyr::summarise(districts.el, 
+                 total.count = n(),
+                 median.ppsm = round(median(ppsm, na.rm = TRUE), 1), # unit: kFt/m2
+                 sd.ppsm = round(sd(ppsm,na.rm = TRUE), 1))          # unit: kFt/m2
+
+dplyr::summarise(districts.ki, 
+                 total.count = n(),
+                 median.rpsm = round(median(rpsm, na.rm = TRUE), 1), # unit: kFt/m2/year
+                 sd.rpsm = round(sd(rpsm,na.rm = TRUE), 1))          # unit: kFt/m2/year
+```
+As expected, the highest prices per square meter are in the 5th district, which is most central. This is also where the standard deviation is highest, probably driven by a few outliers.
+
+## Variations `varos` to `varos` (tables)
+Let's now compile a (more detailed) table for each `varos`, with not only `ppsm` and `rpsm` but also `anr`. Note that we use here the pipeline operator `%>%` for a more compact syntax. The annual return is expressed in percent.
+```{r, warning=FALSE}
+# calculate median and standard deviations
+elado.by_varos <- na.omit(elado) %>%
+  dplyr::group_by(district, varos) %>%
+  dplyr::summarise(n = n(),
+                   med.ppsm = round(median(ppsm)*1000, 1), # unit: kFt/m2
+                   sd.ppsm = round(sd(ppsm)*1000, 1))      # unit: kFt/m2 
+
+kiado.by_varos <- na.omit(kiado) %>%
+  dplyr::group_by(district, varos) %>%
+  dplyr::summarise(n = n(),
+                   med.rpsm = round(median(rpsm)*1000, 1), # unit: kFt/m2/year
+                   sd.rpsm = round(sd(rpsm)*1000, 1))      # unit: kFt/m2/year 
+
+# combine the two tables
+ela.kia.by_varos <- dplyr::inner_join(elado.by_varos, kiado.by_varos, by=c("district","varos"))
+
+# calculate annual return and its standard deviation
+ela.kia.by_varos <- ela.kia.by_varos %>%
+  dplyr::mutate(med.anr = round(med.rpsm / med.ppsm * 100, 1), # annual return in % 
+                sd.anr = round(med.anr * sqrt((sd.ppsm/med.ppsm)^2 +(sd.rpsm/med.rpsm)^2), 1)) # uncertainty in abs percent
+
+# display table
+print(ela.kia.by_varos[,c(1,2,4,7,9,10)])
+```
+Based on median price per square meter, the best investment opportunities are in "Belso-Erzsébetváros" inside the 7th district, where `med.anr = 6.8 %`. The variable `sd.anr` provides an estimate of uncertainty: one can expect annual return in the range `6.8 +/- 3.0 %`. The large uncertainty confirms the obvious idea that variables other than location contribute to the selling and rental value of a flat. 
+
+Note that the uncertainty calculation assumes that `ppsm` and `rpsm` are Normally distributed, which is not strictly true as both distributions are skewed. 
+
+## Variations `varos` to `varos` (violin plots)
+Let's now deliver the same information, but in a visual way using violin plots, which give  at a glance the the probability density fuction of the data. 
+
+The plots are inpired by http://www.sthda.com/english/wiki/ggplot2-violin-plot-quick-start-guide-r-software-and-data-visualization.
+
+Firstly, the selling price:
+```{r, warning=FALSE}
+# basic violin plot
+p <- ggplot2::ggplot(data = elado, aes(x = varos, y = ppsm)) + 
+  geom_violin(trim=TRUE)
+
+# select items to display
+p <- p + scale_x_discrete(limits=c("Belváros", "Lipótváros",
+                                   "Belso-Terézváros","Belso-Erzsébetváros"))
+                                   
+# scale the axis
+p <- p + scale_y_continuous(limits = c(0, 3000)) # deletes the data
+#p <- p + coord_cartesian(xlim = c(0,2)) # centers the plot
+
+# add labels
+p <- p + ylab("ppsm [kFt/m2]")
+# Rotate the  plot
+p <- p + coord_flip() 
+
+# Add summary statistics
+p <- p + stat_summary(fun.y=median, geom="point", size=2, color="red")
+p <- p + geom_boxplot(width=0.1)
+
+print(p)
+```
+
+Similarly for rental prices, with an interactive plot (thanks to the package `plotly::`):
+
+```{r, warning=FALSE, echo=FALSE}
+# basic violin plot
+p <- ggplot2::ggplot(data = kiado, aes(x = varos, y = rpsm)) + 
+  geom_violin(trim=TRUE)
+
+# select items to display
+p <- p + scale_x_discrete(limits=c("Belváros", "Lipótváros",
+                                   "Belso-Terézváros","Belso-Erzsébetváros"))
+                                   
+# scale the axis
+p <- p + scale_y_continuous(limits = c(0, 200)) # deletes the data
+#p <- p + coord_cartesian(ylim = c(0,200)) # centers the plot
+
+# add labels
+p <- p + ylab("rpsm [kFt/m2/year]")
+# Rotate the  plot
+p <- p + coord_flip() 
+
+# Add summary statistics
+p <- p + stat_summary(fun.y=median, geom="point", size=2, color="red")
+p <- p + geom_boxplot(width=0.1)
+
+ggplotly(p)
+```
+
+## Variations with `area`
+The purpose of this paragraph is to understand if the price-per-square-meter drops for larger flats. This is an important questions for investor who might wonder if they are better off buying one large flat or 2 smaller ones. We are essentially asking if  the two variables `ppsm` and `area` are correlated. Let's first plot them, then  answer the question more formally through Hypothesis testing.
+
+```{r}
+p1 <- ggplot2::ggplot(data = elado, aes(x = area, y = ppsm)) +
+        geom_point() +
+        #scale_x_continuous(limits = c(0,200)) +
+        #scale_y_continuous(limits = c(0,3000)) +  
+        coord_cartesian(xlim = c(0, 200), ylim = c(0,5000)) +
+        geom_smooth() 
+
+p2 <- ggplot2::ggplot(data = kiado, aes(x = area, y = rpsm)) +
+        geom_point() +
+        #scale_x_continuous(limits = c(0,200)) +
+        #scale_y_continuous(limits = c(0,200)) +  
+        coord_cartesian(xlim = c(0, 200), ylim = c(0,500)) +
+        geom_smooth()
+
+gridExtra::grid.arrange(p1, p2)
+
+with(data = elado, cor.test(area, ppsm), method = "pearson")
+with(data = kiado, cor.test(area, rpsm), method = "pearson")
+```
+It turns out that the price-per-square-meter is not correlated with the flat area. The smoothers (blue line) rise sharply for very small flat (~ 20 m2), but this is this effect of clear outliers.
+
+### Variation with `lift`
+Here is a simple question: "on average, is the property value higher when there is an elevator in the building?".
+One can summarize data with the dplyr package but a visual solution using box plots is preferred.
+```{r}
+# elado
+p1 <- ggplot2::ggplot(data = dplyr::filter(elado, varos == "Belso-Terézváros"),
+                      aes(x = lift, y = ppsm)) +
+          geom_boxplot() +
+          coord_cartesian(ylim = c(0, 1200)) +
+          scale_y_continuous(breaks = seq(0, 1200, 200)) +
+          ylab("PPSM in kFt/m2")
+
+plotly::ggplotly(p1)
+```
+In the varos "Belso-Terézváros", flats with a lift have a price per square meter 22% higher than without a lift.
+
+The result is intuitively right, but one should always be careful not to draw incorrect conclusions from such simple analyses because the variable `lift` may be strongly coupled with other variables, which would "confound"" the result. 
+
+For instance, old buildings in the city centre are very expensive because of the location is great, but they are also less likely to have elevators, so a simple analysis could show that flats with a elevator are less expensive.
+
+
+# Data exploration for Machine Learning
+In the section, the goal is to gain insights into the dataset ahead of applying Machine Learning tools for predictive modelling
+
+## Identify confounders
+It is usually a good idea to understand how the variables in a dataset are correlated, in order NOT to make incorrect inferences. At the same time, if the purpose of the model is to make predictions (as opposed to making inferences, or hypothesis tests), then checking for confounders is as not important.
+
+A good discussion on the topic is at https://www.researchgate.net/post/How_do_I_find_confounding_variables.
+
+Use the awesone graph called a "Correlogram"" to vizualise pairwise correlations of continuous variables:
+```{r}
+# select a few continuous variables
+elado.cont <- dplyr::select(elado, price, area, fullrooms, halfrooms)
+
+# covariances matrix (not very interpretable)
+cov(elado.cont)
+
+# correlation coefficients [see also "R in Action"]
+cor(elado.cont, y=NULL, use="pairwise.complete.obs", method=c("pearson","kendall","spearman"))
+
+# testing correlations for significance (only 2 variables at a time)
+with(data = elado.cont, cor.test(price, area, alternative="two.side", method="pearson"))
+
+# visualize correlations with a correlogram
+corrgram::corrgram(elado.cont,
+                   order=FALSE,
+                   lower.panel = panel.pie,
+                   upper.panel = panel.pts,
+                   text.panel = panel.txt,
+                   main = "Correlogram of continuous variables")
+```
+It turns out that the number of full rooms is strongly correlated with the area. No surprise. The number of halfrooms is only slightly correlated with the area, whilst the price is not correlated at all with the number of halfrooms
+
+
+
+Use the awesome mosaic plots to look at the categorical variables:
+```{r}
+# select a few categorical variables
+elado.cat <- elado %>%
+  dplyr::filter(heating == "gáz (cirko)" | 
+                heating == "gáz (konvektor)" | 
+                heating == "gáz (héra)") %>%
+  droplevels()
+
+vcd::mosaic(~district+heating+lift, 
+            elado.cat,
+            shade = TRUE, legend = TRUE)
+```
+
+
+## Identify class imbalances
+A simple bar plot for the various variables will help identify severe class imbalance and recode some of the categorical variables as required. 
+```{r}
+ggplot2::ggplot(data = elado, aes(x = varos)) +
+  geom_bar(aes(y = (..count..)/sum(..count..))) +
+  ylab("Density") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+  
+```
+
+## Identify missing values
+Sometimes the dataset can be sparse. A simple bar chart will help see which variables have many missing values. Imputation techniques can deal effectively with missing values in order to increase the number of examples available for training.
+```{r}
+PlotMissingPercentages(kiado, 'hotpink', 20)
+```
+
+Similarly, it can be interesting to understand in which spectrum of the data are the missing values.
+```{r}
+VIM::aggr(kiado, plot = TRUE, bars = TRUE, combined = FALSE)
+VIM::histMiss(kiado, pos = 1)
+```
+
+## Near-zero variance
+Identify variables with near-zero variance to de-clutter the analysis, by removing variables with near-zero variance.
+```{r}
+nzv <- caret::nearZeroVar(elado, saveMetrics= TRUE)
+print(nzv)
+```
