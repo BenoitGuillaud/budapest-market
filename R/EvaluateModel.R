@@ -15,12 +15,23 @@ EvaluateModel <- function(y, yhat, verbose = TRUE)
   # compute performance measure
   pm <- caret::postResample(obs = y, pred = yhat)
 
+  df <- data.frame(y,yhat)
   # Plot residuals vs. observed values
-  kernlab::plot(y, (yhat-y) / y*100)
+  print(ggplot2::ggplot(data = df,
+                        aes(x = (yhat-y)/y*100, y = yhat)) +
+    geom_point() +
+    ylab("Residual = (yhat-y)/y * 100") +
+    xlab("Observed value y"))
   
   # Plot predicted values vs. observed values
-  kernlab::plot(y,yhat)
-
+    print(ggplot2::ggplot(data=df,
+                          aes(x = y, y = yhat)) +
+    geom_point() +
+    ylab("Predicted value: yhat") +
+    xlab("Observed value: y") +
+    geom_abline(intercept = 0, slope = 1, col = "red", linetype = 2))
+  
+  
   return(pm)
 }
 
@@ -35,8 +46,3 @@ EvaluateModel <- function(y, yhat, verbose = TRUE)
 # sd(errTest, na.rm=TRUE) 
 # hist(errTest, breaks = pretty(-300:300, n=100))
 
-# ggplot2::ggplot(data = elado.test,
-#                 aes(x = (price.pred-price)/price*100, y = price.pred)) +
-#   geom_point() +
-#   ylab("Residual = (yhat-y)/y * 100") +
-#   xlab("Observed value y")
