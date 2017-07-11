@@ -1,0 +1,242 @@
+---
+title: 'Budapest Property Market: Tools for Predictive Modelling'
+author: "Benoît Guillaud"
+date: "21 June 2017"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r set-options, echo=FALSE, cache=FALSE}
+# set up markdown / knitr environment
+options(width = 100)
+```
+# Abstract
+This is the second in a serie of three papers to illustrate the use of simple R tools for the analysis of a city's Real Property market. We focus here the use of machine learning algorithms to predict the rental value and the selling price of a property, based on a set of predictors.
+
+Note that the paper focuses on the method rather than the actual prediction performance. Indeed, the intention is to show how to build simple models that can be used as surrogates in an optimizazion routine. The optimization itself is the subject of the third and last paper. 
+
+
+Along the way, we will learn how to:
+
+* Prepare a dataset for analysis - Select the variables with `dplyr::select()`
+* Create training and testing sets - Randomly split the data with `caret::createDataPartition()`
+* Build and evalate predictive models - Train model with multiple algorithms with `caret::train()`
+
+```{r setup, echo=FALSE, include=FALSE}
+# knitr options
+knitr::opts_chunk$set(echo = TRUE)
+
+# start with a clean slate
+gc()            # Force R to release memory it is no longer using
+rm(list = ls()) # Delete all objects in the workspace 
+
+# load libraries
+source("./R/LoadLibraries.R")
+
+# load custom functions
+source("./R/EvaluateModel.R")
+source("./R/PrepareData.R")
+source("./R/PlotMissingPercentages.R")
+```
+
+# Load and prepare the datasets
+Only basic information about the properties are used make predictions: 
+
+| Feature   | Description                                 | Type    |
+|-----------|---------------------------------------------|---------|
+| ppsm      | Price per square meter in kFt/m2            | Float   |
+| rpsm      | Rent per square meter in kFt/m2/year        | Float   |
+| area      | Flat floor area (mezzanine NOT included)    | Integer |
+| district  | District wehre the property is located      | String  |
+| varos     | Administrative division inside the district | String  |
+| lift      | Presence of an elevator                     | Boolean |
+
+Additionally, the price and the annual rent of a flat is always given in mFt.
+
+### Load the data
+```{r}
+# Load the data
+elado <- read.csv("./data/extraction_elado_2017_03_16.txt", 
+                  fileEncoding="UTF-8-BOM", header=TRUE, sep=";")
+kiado <- read.csv("./data/extraction_kiado_2017_03_16.txt", 
+                  fileEncoding="UTF-8-BOM", header=TRUE, sep=";")
+
+# Clean and recode the variables
+elado <- PrepareData(elado)
+kiado <- PrepareData(kiado)
+
+# Create new variable ppsm and rpsm from "price"
+elado <- dplyr::mutate(elado, ppsm = price*1000/area)    # kFt/m2
+kiado <- dplyr::mutate(kiado, 
+                       rent = price*12/1000,             # mFt/year
+                       rpsm = price*12/area)             # kFt/m2/year
+
+
+# select the features of interest
+elado <- dplyr::select(elado, price, ppsm, area, varos, district, 
+                       lift, floor, balcony, view, condition, heating, aircon, orient)
+kiado <- dplyr::select(kiado, rent, rpsm, area, varos, district, 
+                       lift, floor, balcony, view, condition, heating, aircon, orient)
+```
+
+### Further prepare dataset
+It's also good practice to identify class imbalances and remove the categories that are not represented:
+```{r}
+nonWantedLevels<-c(4, 11)
+elado <- elado %>%
+  dplyr::filter(!as.integer(varos) %in% nonWantedLevels) %>%
+  droplevels()
+```
+
+We also impute missing values to increase the number of training examples available for training and testing our model:
+```{r}
+elado$balcony <- ifelse(is.na(elado$balcony), 0, elado$balcony)
+kiado$balcony <- ifelse(is.na(kiado$balcony), 0, kiado$balcony)
+
+elado$aircon <- ifelse(is.na(elado$aircon), 0, elado$aircon)
+kiado$aircon <- ifelse(is.na(kiado$aircon), 0, kiado$aircon)
+```
+
+The previous paper indicated that the set has no near-zero-value variables.
+Any feature engineering could also be performed as part of this step.
+
+
+### Build training and testing sets
+There are (at least) 2 was to randomly split the dataset into a training and testing sets. We choose here to split according to outcome, in order to have balanced dataset according to variables price and rent.
+```{r}
+# elado
+set.seed(2)
+  ## based on outcome
+  inTrain <- caret::createDataPartition(elado$price, p=0.75,list = FALSE)
+  ## based on predictors
+  # index <- maxDissim()
+elado.train <- elado[inTrain,]
+elado.test <-  elado[-inTrain,]
+
+# kiado
+set.seed(2)
+  ## based on outcome
+  inTrain <- caret::createDataPartition(kiado$rent, p=0.75,list = FALSE)
+  ## based on predictors
+  # index <- maxDissim()
+kiado.train <- kiado[inTrain,]
+kiado.test <-  kiado[-inTrain,]
+```
+
+
+# Build predictive models
+In this section, we build several predictive models to see which one best fits the data. The models are trained on the training set and evaluated on the testing set. Their parameters are optimized through cross-validation (on the training set). 
+
+The evaluation is done through visualization and quantitative performance measures:
+
+* Plot of residuals vs. observed values
+* Plot of predicted values vs. observed values
+* Sum of squared root errors
+
+### Baseline model
+The baseline model consists of predicting the selling price of a property as the median value in that varos. The baseline is a simple measure used as benchmark for more sophisticated models.
+```{r}
+# find the median PPSM in each varos (training set) 
+elado.train.by_varos <- elado.train %>%
+  dplyr::group_by(varos) %>%
+  dplyr::summarise(n = n(),
+                   avg.ppsm = mean(ppsm),
+                   med.ppsm = median(ppsm)) %>%
+  dplyr::ungroup()
+
+# join to mimic VLOOKUP, then make predictions (testing set)
+elado.test <- dplyr::inner_join(elado.test, elado.train.by_varos, by=c("varos"))
+elado.test <- dplyr::mutate(elado.test, price.pred = med.ppsm * area / 1000)
+
+# model evaluation
+with(elado.test, 
+     EvaluateModel(price, price.pred))
+```
+The baseline model predics the property selling price with a high RMSE and R2=0.18, probably driven by a few outliers.
+
+### Linear regression
+Use `caret::` to build a simple regression linear model with 3 predictors: area, varos and whether there is a lift or not.
+```{r}
+# Set the resampling method and options
+ctrl <- caret::trainControl(## n-fold CV
+                            method = "repeatedcv",
+                            number = 10,
+                            ## repeated k times
+                            repeats = 3)
+
+price_mod_lm.A <- caret::train(price ~ area + varos + lift,
+                               data = elado.train,
+                               na.action = na.omit,
+                               method = "lm",
+                               tuneLength = 15,
+                               trControl = ctrl)
+                               #preProc = c("BoxCox", "center", "scale"))
+
+# model summary                       
+summary(price_mod_lm.A) 
+
+# Predictions on testing set
+price_pred_lm.A <- predict(price_mod_lm.A, newdata=na.omit(elado.test))
+
+# evaluate model on testing set
+with(subset(na.omit(elado.test)), 
+     EvaluateModel(price, price_pred_lm.A))
+```
+Notes:
+
+* R2 = 0.68 is already much better than the baseline
+* The BoxCox transformation seems to degrade the result (R2=0.57)
+
+
+### Regression tree (CART)
+CART model with parameter optimisation through cross-validation using `caret::` package, using the same 3 features as for the linear regression model above (varos, area, lift) for comparison.
+
+```{r}
+# resampling method and cross-validation options
+ctrl <- caret::trainControl(## n-fold CV
+                            method = "cv",
+                            number = 10,
+                            ## repeated k times
+                            repeats = 3)
+
+cpGrid = expand.grid( .cp = c(1e-14, 1e-13, 1e-12, 1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2)) 
+
+# cross validation
+price_cv_cart.A <- caret::train(price ~ area + varos + lift,
+                               data = elado.train,
+                               na.action = na.pass,
+                               method = "rpart",
+                               trControl = ctrl,
+                               tuneGrid = cpGrid,
+                               preProc = c("BoxCox", "center", "scale"))
+
+# cross-validation results
+print(price_cv_cart.A)
+plot(price_cv_cart.A)
+
+# CART model with optimized cp
+price_mod_rpart.A <- rpart::rpart(price ~ area + varos + lift, data = elado.train, cp = 1e-5)
+
+# visualize the partition tree
+#rpart.plot::rpart.plot(price_mod_rpart.A, cex = 0.7,faclen = 5)
+
+# predictions on testing set
+price_pred_rpart.A = predict(price_mod_rpart.A, newdata = elado.test)
+
+
+# evaluate model on testing set
+with(elado.test, 
+     EvaluateModel(price, price_pred_rpart.A))
+```
+Notes:
+
+* With R2=0.71, the CART algorithm offers further improvement compared to the equivalent linear regression.
+* CART algorithm seems insensitive to pre-processing
+* For CART, na.action = na.pass to retain as much data as possible
+* Using all the variables in the dataset (not just 3) would improve the predictive performance. The observed RMSE is then R2=0.75
+
+## Other models
+The `caret::` package makes it easy to try many other algorithms, such as random forests or support vector machine. With no a priori knowledge of the problem, it is highly recommended to try many different algorithms to find out which one(s) perform well for the problem at hand.
+
+
