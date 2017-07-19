@@ -27,22 +27,25 @@ source("./R/PlotMissingPercentages.R")
 # Abstract
 This is the last in a series of three papers aimed to illustrate the use of simple R tools for the analysis of a city's Real Property market. We previously covered Exploratory Data Analysis (Paper 1) and built predictive models using machine learning algorithms (Paper 2). In this third paper, we use the models of projected rental income and property prices as surrogates in an optimization routine in order to find the best return on investment in the design space.
 
-Along the way, we will demonstrate how to use `mlrMBO::` package, a model-based optimization frameworks in R.
+The optimization provides clear insights to the investor to obtain the best returns: the best locations in the city, whether a lift is important, and whether to opt for a large or small flat. 
 
-# Model-Based Optimization
+Along the way, we will demonstrate how to use `mlrMBO::` package, a model-based optimization framework in R.
+
+# Problem definition
 In this optimization problem, we are looking to maximise the return on investment defined as the annual income from renting a flat divided by the initial property price. The variables of interest are:
 
-* Flat surface area (continuous, between 30 m2 and 150 m2)
-* Whether there is a lift or not (boolean, Yes/No)
-* The district where te flat is located (categorical, 10 different város)
+* Flat surface area (continuous, between 50 m2 and 120 m2)
+* Whether there is a lift or not (categorical, Yes/No)
+* The district where te flat is located (categorical, 4 different város)
 
-Note that each variable has a distinct type: continuous, boolean, categorical. They can take any value within the range/list specified.
+Note that each variable has a distinct type: continuous or categorical. They can take any value within the range/list specified.
+
 There are no optimization constraint per se. A constraint would be useful if you had a defined budget not to exceed or a minimum investment target.
 
-### Surrogate models
-Let's create simple models for the annual income and the property price to use them as surrogate during optimization.
-After loading and preparing the dataset, we will train the model using a Regression Tree (CART) algorithm as described in Paper 2.
+# Surrogate models
+Let's create simple models for (1) the annual rental income and (2) the property price. We will use them as surrogate "black-box" models in the optimization routine.
 
+The code below loads and prepares the datasets, then trains the models with a simple linear regression. 
 ```{r, echo=FALSE}
 # Load the data
 elado <- read.csv("./data/extraction_elado_2017_03_16.txt", 
@@ -63,18 +66,29 @@ kiado <- dplyr::mutate(kiado,
 # select the features of interest
 elado <- dplyr::select(elado, price, area, varos, lift)
 kiado <- dplyr::select(kiado, rent, area, varos, lift)
+
+# drop levels except "Belso-Erzsébetváros", "Belso-Terézváros", "Belváros", "Lipótváros"
+nonWantedLevels<-c(4, 5, 6, 7, 8, 9, 11)
+elado <- elado %>%
+  dplyr::filter(!as.integer(varos) %in% nonWantedLevels) %>%
+  droplevels()
+nonWantedLevels<-c(4, 5, 6, 7, 8)
+kiado <- kiado %>%
+  dplyr::filter(!as.integer(varos) %in% nonWantedLevels) %>%
+  droplevels()
+
 ```
 
 ```{r, echo=FALSE}
 # elado
-set.seed(10)
-inTrain <- caret::createDataPartition(elado$price, p=0.65,list = FALSE)
+set.seed(11)
+inTrain <- caret::createDataPartition(elado$price, p=0.75,list = FALSE)
 elado.train <- elado[inTrain,]
 elado.test <-  elado[-inTrain,]
 
 # kiado
-set.seed(10)
-inTrain <- caret::createDataPartition(kiado$rent, p=0.65,list = FALSE)
+set.seed(11)
+inTrain <- caret::createDataPartition(kiado$rent, p=0.75,list = FALSE)
 kiado.train <- kiado[inTrain,]
 kiado.test <-  kiado[-inTrain,]
 ```
@@ -92,9 +106,9 @@ summary(price_mod_lm.A)
 # Predictions on testing set
 price_pred_lm.A <- predict(price_mod_lm.A, newdata=na.omit(elado.test))
 
-# evaluate model on testing set
-with(subset(na.omit(elado.test)), 
-     EvaluateModel(price, price_pred_lm.A))
+# # evaluate model on testing set
+# with(subset(na.omit(elado.test)), 
+#      EvaluateModel(price, price_pred_lm.A))
 ```
 
 ```{r}
@@ -108,32 +122,22 @@ summary(rent_mod_lm.A)
 # Predictions on testing set
 rent_pred_lm.A <- predict(rent_mod_lm.A, newdata=na.omit(kiado.test))
 
-# evaluate model on testing set
-with(subset(na.omit(kiado.test)), 
-     EvaluateModel(rent, rent_pred_lm.A))
+# # evaluate model on testing set
+# with(subset(na.omit(kiado.test)), 
+#      EvaluateModel(rent, rent_pred_lm.A))
 ```
 
+Note that these very simple models (linear regression from 3 features) very poorly fit the data.
 
-CART model with parameters previously optimised through cross-validation using `caret::` package, using 3 features (varos, area, lift):
-```{r}
-
-# CART model with optimized cp
-price_mod_rpart.A <- rpart::rpart(price ~ area + varos + lift, data = elado.train, cp = 1e-4)
-rent_mod_rpart.A <- rpart::rpart(rent ~ area + varos + lift, data = kiado.train, cp = 5e-3)
-
-# predictions on testing set
-price_pred_rpart.A = predict(price_mod_rpart.A, newdata = elado.test)
-rent_pred_rpart.A = predict(rent_mod_rpart.A, newdata = kiado.test)
-```
-
-### Optimization with mlrMBO
-https://cran.r-project.org/web/packages/mlrMBO/vignettes/mlrMBO.html
+# Optimization with mlrMBO
 The following steps are needed to start the optimization:
- - Define the objective function and its parameters using the package smoof.
- - Generate an initial design (optional).
- - Define a mlr learner for the surrogate model (optional).
- - Set up a MBO control object.
- - Finally start the optimization with mbo().
+
+* Define the objective function and its parameters using the package smoof.
+* Generate an initial design (optional).
+* Define a mlr learner for the surrogate model (optional).
+* Set up a MBO control object.
+* Finally start the optimization with mbo().
+
 
 ```{r}
 # define objective function
@@ -152,7 +156,7 @@ obj.fun = makeSingleObjectiveFunction(
   name = "Annual return",
   fn = fun,
   par.set = makeParamSet(
-    makeNumericParam("area", lower = 20, upper = 100),
+    makeNumericParam("area", lower = 50, upper = 100),
     makeDiscreteParam("lift", values = c("nincs", "van")),
     makeDiscreteParam("varos", values = c("Belso-Erzsébetváros", "Belso-Terézváros",
                                           "Belváros", "Lipótváros"))
@@ -164,6 +168,13 @@ obj.fun = makeSingleObjectiveFunction(
 # visualize the function
 autoplot(obj.fun)
 
+```
+
+
+The objective function plots show at a glance that the best returns are achieved in Belso-Erzsébetváros, for the smaller flat without any lift. The visualization is easy with 3 features. The `mbo()` routine below becomes mandatory when the prediction is based on more variables.
+
+
+```{r, echo=TRUE, results="hide", message=FALSE}
 # generate initial design (optional)
 des = generateDesign(n = 10, par.set = getParamSet(obj.fun), fun = lhs::randomLHS)
 
@@ -173,409 +184,35 @@ surr.rf = makeLearner("regr.randomForest", predict.type = "se")
 
 # set MBO control object
 mbo.ctrl = makeMBOControl()
-mbo.ctrl = setMBOControlTermination(mbo.ctrl, iters = 30)
+mbo.ctrl = setMBOControlTermination(mbo.ctrl, iters = 100)
 mbo.ctrl = setMBOControlInfill(mbo.ctrl, crit = makeMBOInfillCritEI())
 
 # start optimization with mbo().
 run = mbo(obj.fun, control = mbo.ctrl, design = des, learner = surr.rf,  show.info = TRUE)
 
-# print result
-run$x
-run$y
+```
 
-
+```{r}
 # diagnostic
-#print(run)
+print(run)
 #plot(run)
 ```
+As expected, the output of the optimization recommends to invest into a small flat, without a lift, in elso-Erzsébetváros.
 
 
+# Conclusions
+The analysis above illustrates the power of the `mlrMBO` framework. Other optimization packages are available in R but I found `mlrMBO` particularly apt at handling the problem at hand:
 
+* Global optimization problem, with potentially multiple maxima and minima
+* Non-smooth problem, because of the categorical variables: the objective function does not possess derivatives
+* Optimization under (linear or non-linear) constraints
+* Handling of "black-box" models - the surrogates
 
 
+Additional references for optimization in R include:
 
-
-
-
-
-
-
-
-
-### Motivation to use mlrMBO
-
-
-```{r}
-# objective function
-obj.fun = makeCosineMixtureFunction(1)
-obj.fun = convertToMinimization(obj.fun)
-print(obj.fun)
-## Single-objective function
-## Name: Cosine Mixture Function
-## Description: no description
-## Tags: single-objective, discontinuous, non-differentiable, separable, scalable, multimodal
-## Noisy: FALSE
-## Minimize: TRUE
-## Constraints: TRUE
-## Number of parameters: 1
-##            Type len Def  Constr Req Tunable Trafo
-## x numericvector   1   - -1 to 1   -    TRUE     -
-## Global optimum objective value of -0.1000 at
-##   x
-## 1 0
-ggplot2::autoplot(obj.fun)
-
-# initial design
-des = generateDesign(n = 5, par.set = getParamSet(obj.fun), fun = lhs::randomLHS)
-des$y = apply(des, 1, obj.fun)
-
-# surrogate model
-surr.km = makeLearner("regr.km", predict.type = "se", covtype = "matern3_2", control = list(trace = FALSE))
-
-# MBOControl
-control = makeMBOControl()
-control = setMBOControlTermination(control, iters = 10)
-control = setMBOControlInfill(control, crit = makeMBOInfillCritEI())
-
-# optimization
-run = mbo(obj.fun, design = des, learner = surr.km, control = control, show.info = TRUE)
-print(run)
-
-# vizualization
-run = exampleRun(obj.fun, learner = surr.km, control = control, show.info = FALSE)
-plotExampleRun(run, iters = c(1L, 2L, 10L), pause = FALSE)
-```
-
-# Try with Budapest models
-## Take 1
-Simple model: linear with one continuous variable: "area"
-
-```{r}
-# objective function
-fun1 = function(x) {
-  area <- x
-  price <- 57.8451 + 32.9628*area
-  rent <- 3.61168 + 1.51675*area
-  anr_pc = rent/price * 100
-  return(anr_pc)
-}
-
-obj.fun = makeSingleObjectiveFunction(name = "anr_pc",
-                                      fn = fun1,
-                                      par.set = makeParamSet(
-                                        makeNumericParam("area", lower = 20, upper = 50)),
-                                      constraint.fn = NULL,
-                                      has.simple.signature = TRUE,
-                                      vectorized = TRUE,
-                                      minimize = FALSE)
-print(obj.fun)
-ggplot2::autoplot(obj.fun)
-```
-
-```{r}
-# initial design
-des = generateDesign(n = 5, par.set = getParamSet(obj.fun), fun = lhs::randomLHS)
-des$y = apply(des, 1, obj.fun)
-
-# surrogate model
-surr.km = makeLearner("regr.km", predict.type = "se", covtype = "matern3_2", control = list(trace = FALSE))
-
-```
-
-```{r}
-# MBOControl
-control = makeMBOControl()
-control = setMBOControlTermination(control, iters = 10)
-control = setMBOControlInfill(control, crit = makeMBOInfillCritEI())
-```
-
-```{r}
-# optimization
-run = mbo(obj.fun, control = control)#, design = des, learner = surr.km, control = control, show.info = TRUE)
-print(run)
-
-# visualization
-plot(run, iters = NULL, pause = interactive())
-```
-
-
-
-## Take 2
-Same linear model with only one variable, but this time using the Linear Regression output object.
-
-```{r}
-# objective function (linear regression)
-fun2 = function(x) {
-  df <- data.frame(area = c(x))
-  pp <- predict(price_mod_lm.O, newdata=df)
-  rr <- predict(rent_mod_lm.O, newdata=df)
-
-  anr = rr/pp * 100
-  return(anr)
-}
-
-obj.fun = makeSingleObjectiveFunction(name = "anr",
-                                      fn = fun2,
-                                      par.set = makeParamSet(
-                                        makeNumericParam("area", lower = 35, upper = 100)),
-                                      constraint.fn = NULL,
-                                      has.simple.signature = TRUE,
-                                      vectorized = TRUE,
-                                      minimize = FALSE)
-print(obj.fun)
-ggplot2::autoplot(obj.fun)
-```
-
-```{r}
-# initial design
-des = generateDesign(n = 5, par.set = getParamSet(obj.fun), fun = lhs::randomLHS)
-des$y = apply(des, 1, obj.fun)
-
-# surrogate model
-surr.km = makeLearner("regr.km", predict.type = "se", covtype = "matern3_2", control = list(trace = FALSE))
-
-```
-
-```{r}
-# MBOControl
-control = makeMBOControl()
-control = setMBOControlTermination(control, iters = 10)
-control = setMBOControlInfill(control, crit = makeMBOInfillCritEI())
-```
-
-```{r}
-# optimization
-run = mbo(obj.fun, control = control)#, design = des, learner = surr.km, control = control, show.info = TRUE)
-print(run)
-
-# visualization
-plot(run, iters = NULL, pause = interactive())
-```
-
-## Take 3
-Linear model withusing the Linear Regression output object with 2 variables:
- - Area: variable continuous
- - Lift: categorical variable
- 
-```{r}
-# objective function
-fun3 = function(x) {
-  mydf <- data.frame(area = c(x$area),
-                     lift = x$lift)
-  pp <- predict(price_mod_lm.O, newdata=mydf)
-  rr <- predict(rent_mod_lm.O, newdata=mydf)
-
-  anr = rr/pp * 100
-  return(anr)
-}
-
-objfun2 = makeSingleObjectiveFunction(
-  name = "Annual return",
-  fn = fun3,
-  par.set = makeParamSet(
-    makeNumericParam("area", lower = 35, upper = 100),
-    makeDiscreteParam("lift", values = c("nincs", "van"))
-  ),
-  has.simple.signature = FALSE,
-  minimize = FALSE
-)
-
-# visualize the function
-autoplot(objfun2)
-```
-
-```{r}
-control2 = makeMBOControl()
-control2 = setMBOControlInfill(
-  control = control2,
-  crit = makeMBOInfillCritCB(cb.lambda = 5),
-  opt.focussearch.points = 500
-)
-
-control2 = setMBOControlTermination(
-  control = control2,
-  iters = 20)
-```
-
-```{r}
-mlr::configureMlr(show.info = FALSE, show.learner.output = FALSE, on.learner.warning = "quiet")
-run2 = mbo(objfun2, control = control2)#,design = design2)#, learner = surr.rf,  show.info = TRUE```{r}
-print(run2)
-plot(run2)
-```
-
-## Take 4
-Linear model using the Linear Regression output object with 3 variables:
- - Area: variable continuous
- - Lift: categorical variable
- - Varos: categorical
- 
-```{r}
-# define objective function
-fun = function(x) {
-  df <- data.frame(area = c(x$area),
-                     lift = x$lift,
-                     varos = x$varos)
-  pp <- predict(price_mod_lm.A, newdata=df)
-  rr <- predict(rent_mod_lm.A, newdata=df)
-
-  anr = rr/pp * 100
-  return(anr)
-}
-
-obj.fun = makeSingleObjectiveFunction(
-  name = "Annual return",
-  fn = fun,
-  par.set = makeParamSet(
-    makeNumericParam("area", lower = 35, upper = 200),
-    makeDiscreteParam("lift", values = c("nincs", "van")),
-    makeDiscreteParam("varos", values = c("Belso-Erzsébetváros", "Belso-Terézváros",
-                                          "Belváros", "Lipótváros"))
-  ),
-  has.simple.signature = FALSE,
-  minimize = FALSE
-)
-
-# visualize the function
-autoplot(obj.fun)
-
-# generate initial design (optional)
-des = generateDesign(n = 10, par.set = getParamSet(obj.fun), fun = lhs::randomLHS)
-
-# define mlr learner for surrogate model (optional)
-mlr::configureMlr(show.info = FALSE, show.learner.output = FALSE, on.learner.warning = "quiet")
-surr.rf = makeLearner("regr.randomForest", predict.type = "se")
-
-# set MBO control object
-mbo.ctrl = makeMBOControl()
-mbo.ctrl = setMBOControlTermination(mbo.ctrl, iters = 20)
-mbo.ctrl = setMBOControlInfill(mbo.ctrl, crit = makeMBOInfillCritEI())
-
-# start optimization with mbo().
-run = mbo(obj.fun, control = mbo.ctrl, design = des, learner = surr.rf,  show.info = TRUE)
-
-# print result
-run$x
-run$y
-
-
-# diagnostic
-#print(run)
-#plot(run)
-```
-
-```{r}
-control2 = makeMBOControl()
-control2 = setMBOControlInfill(
-  control = control2,
-  crit = makeMBOInfillCritCB(cb.lambda = 5),
-  opt.focussearch.points = 500
-)
-
-control2 = setMBOControlTermination(
-  control = control2,
-  iters = 20)
-```
-
-```{r}
-mlr::configureMlr(show.info = FALSE, show.learner.output = FALSE, on.learner.warning = "quiet")
-run2 = mbo(objfun4, control = control2)#,design = design2)#, learner = surr.rf,  show.info = TRUE```{r}
-print(run2)
-plot(run2)
-```
-
-
-
-
-
-
-# Goal of the analysis
-This document is aimed at getting familiar with the optimization frameworks available in R. The end-goal is to use the know-how in order to optimize the return of investment in Budapest property market.
-
-Some thoughts:
-  - I started thinking that the optimization algorithm would spit out the one best investment. The reality is that there is no single optimum, and that even if there was one, it may not be in the realm of available choices (at least not a a given point in time).
-  - At the beginning, the optimization can give insights, as a benchmark, into the possible returns!
-
-
-  
-# Preliminary work
-## Optimisation problem and solver type
-There are zillions of optimization algorithms out there, but I'll focus here on the problem at hand.
-
-First, it is a Glabal Optimization problem since there may be multiple maxima or minima. Second, it is non-smooth because of the categorical variables. Third, it is optimization under a set of (linear or non-linear) constraints. Fourth, the objective function ma include simulation of black-box models.
-
-Global search, multistart, pattern search, genetic algorithm, multiobjective genetic algorithm, simulated annealing, and particle swarm solvers are typically used in these case where the constraint or objective functions do not possess derivatives.
-
-## Optimization frameworks
-I am looking for a R framework that manage the optimization process. A fairly thorough search over a couple of days led me to the following packages:
-
-### R Optimization Infrastructure (ROI)
-https://cran.r-project.org/web/packages/ROI/index.html
-Framework for handling optimization problems.
-
-### Model-Based Optimization (mlrMBO)
-https://cran.r-project.org/web/packages/mlrMBO/index.html
-Toolbox for model-based optimization.
-
-### References books
-https://www.amazon.com/Nonlinear-Parameter-Optimization-Using-Tools/dp/1118569288
-Refers to 
- - https://cran.r-project.org/web/packages/optimx/index.html (smooth functions)
-
-http://www3.dsi.uminho.pt/pcortez/mor/
-Refers to
- - https://cran.r-project.org/web/packages/tabuSearch/index.html
- 
-
-### Other good reads
-https://fr.mathworks.com/help/gads/index.html
-https://cran.r-project.org/web/views/Optimization.html
-
-# First steps
-## R Optimization Infrastructure (ROI)
-https://www.r-project.org/conferences/useR-2010/slides/Theussl+Hornik+Meyer.pdf
-```{r}
-
-```
-
-http://rstudio-pubs-static.s3.amazonaws.com/222077_d405183befd64a66878d59f3a34e426f.html
-### Linear Programming
-```{r}
-## Simple linear program.
-## maximize:   2 x_1 + 4 x_2 + 3 x_3
-## subject to: 3 x_1 + 4 x_2 + 2 x_3 <= 60
-##             2 x_1 +   x_2 +   x_3 <= 40
-##               x_1 + 3 x_2 + 2 x_3 <= 80
-##               x_1, x_2, x_3 are non-negative real numbers
-
-LP <- OP( c(2, 4, 3),
-          L_constraint(L = matrix(c(3, 2, 1, 4, 1, 3, 2, 2, 2), nrow = 3),
-                       dir = c("<=", "<=", "<="),
-                       rhs = c(60, 40, 80)),
-          max = TRUE )
-LP
-
-sol <- ROI_solve(LP)# , solver = "glpk")
-sol
-
-solution(sol, type = c("primal"))
-solution(sol, type = c("dual"))
-
-sol$solution
-sol$objval
-sol$status
-sol$message
-```
-
-### Quadratic Programming
-### Mixed-Integer Programming
-
-
-
-  
-  
-  
-  
-  
-  
+* mlrMBO, a toolbox for model-based optimization https://cran.r-project.org/web/packages/mlrMBO/index.html
+* ROI, a framework for handling optimization problems https://cran.r-project.org/web/packages/ROI/index.html and https://www.r-project.org/conferences/useR-2010/slides/Theussl+Hornik+Meyer.pdf
+* Book on optimization with R: https://www.amazon.com/Nonlinear-Parameter-Optimization-Using-Tools/dp/1118569288 (`optimx` package) and http://www3.dsi.uminho.pt/pcortez/mor/ (`tabuSearch` package)
+* Other good reads: https://fr.mathworks.com/help/gads/index.html and https://cran.r-project.org/web/views/Optimization.html
 
