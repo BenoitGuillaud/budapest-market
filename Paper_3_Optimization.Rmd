@@ -94,7 +94,7 @@ kiado.test <-  kiado[-inTrain,]
 ```
 
 Linear regression models, using 3 features (varos, area, lift):
-```{r}
+```{r, results="hide"}
 # train linear regression model
 price_mod_lm.A <- stats::lm(price ~ area + varos + lift,
                             data = elado.train,
@@ -107,11 +107,11 @@ summary(price_mod_lm.A)
 price_pred_lm.A <- predict(price_mod_lm.A, newdata=na.omit(elado.test))
 
 # # evaluate model on testing set
-# with(subset(na.omit(elado.test)), 
+# with(subset(na.omit(elado.test)),
 #      EvaluateModel(price, price_pred_lm.A))
 ```
 
-```{r}
+```{r, results="hide", message=FALSE}
 # train linear regression model
 rent_mod_lm.A <- stats::lm(rent ~ area + varos + lift,
                             data = kiado.train,
@@ -123,7 +123,7 @@ summary(rent_mod_lm.A)
 rent_pred_lm.A <- predict(rent_mod_lm.A, newdata=na.omit(kiado.test))
 
 # # evaluate model on testing set
-# with(subset(na.omit(kiado.test)), 
+# with(subset(na.omit(kiado.test)),
 #      EvaluateModel(rent, rent_pred_lm.A))
 ```
 
@@ -176,7 +176,7 @@ The objective function plots show at a glance that the best returns are achieved
 
 ```{r, echo=TRUE, results="hide", message=FALSE}
 # generate initial design (optional)
-des = generateDesign(n = 10, par.set = getParamSet(obj.fun), fun = lhs::randomLHS)
+des = generateDesign(n = 20, par.set = getParamSet(obj.fun), fun = lhs::randomLHS)
 
 # define mlr learner for surrogate model (optional)
 mlr::configureMlr(show.info = FALSE, show.learner.output = FALSE, on.learner.warning = "quiet")
