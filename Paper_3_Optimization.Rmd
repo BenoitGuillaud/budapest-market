@@ -1,7 +1,7 @@
 ---
-title: 'Budapest Property Market: Tools for Predictive Modelling'
+title: 'Budapest Property Market: Optimization'
 author: "Benoît Guillaud"
-date: "21 June 2017"
+date: "19 July 2017"
 output:
   html_document:
     toc: yes
